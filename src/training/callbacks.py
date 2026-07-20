@@ -1,4 +1,4 @@
-"""Provide callbacks and distributed-training configuration."""
+"""Configure callbacks and distributed training."""
 
 import torch
 from lightning import LightningModule, Trainer

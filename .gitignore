@@ -12,11 +12,10 @@ build/
 .env
 .env.*
 .DS_Store
-.agents/
-docs/
+/.agents/
+/data/
+/docs/
 
-data/raw/
-data/processed/
 experiments/
 logs/
 output/

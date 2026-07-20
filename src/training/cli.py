@@ -2,7 +2,7 @@
 
 import argparse
 
-from maestro.training.runner import TrainingConfiguration, run_training
+from src.training.runner import TrainingConfiguration, run_training
 
 
 def parse_args() -> TrainingConfiguration:

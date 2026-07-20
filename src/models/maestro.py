@@ -1,4 +1,4 @@
-"""Define the MAESTRO model and its Lightning integration."""
+"""Define MAESTRO models and their Lightning integration."""
 
 import math
 import os

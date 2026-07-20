@@ -27,10 +27,11 @@ dependencies = [
 ]
 
 [project.scripts]
-maestro-train = "maestro.training.cli:main"
+maestro-train = "src.training.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
+include = ["src", "src.*"]
 
 [tool.ruff]
 line-length = 88
@@ -41,13 +42,12 @@ select = ["ANN", "B", "D", "E", "F", "I", "N", "SIM", "UP"]
 ignore = ["D203", "D213"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["maestro"]
+known-first-party = ["src"]
 
 [tool.ruff.lint.per-file-ignores]
 "notebooks/*.ipynb" = ["ANN201", "D103", "E402", "T201"]
-"models/MAESTRO.py" = ["N999"]
-"src/maestro/models/maestro.py" = ["N803", "N806"]
-"src/maestro/training/callbacks.py" = ["N802"]
+"src/models/maestro.py" = ["N803", "N806"]
+"src/training/callbacks.py" = ["N802"]
 
 [dependency-groups]
 analysis = [

@@ -15,20 +15,12 @@ during pretraining.
 ```text
 maestro/
 ├── assets/                         # Figures used by project documentation
-├── configs/                        # YAML or JSON experiment configurations
-├── data/
-│   ├── raw/                        # Original, untouched data when available
-│   ├── processed/                  # Cohort-specific model-ready datasets
-│   └── all-metadata-030826.csv     # Cross-cohort sample metadata
-├── docs/                           # Papers, notes, and collaborator context
-├── experiments/                    # Checkpoints, logs, and generated outputs
 ├── notebooks/                      # Exploration and analysis notebooks
 ├── scripts/                        # Standalone training and evaluation drivers
-├── src/maestro/
+├── src/
 │   ├── data/                       # Dataset loading and preprocessing logic
 │   ├── models/                     # MAESTRO architecture
 │   └── training/                   # Callbacks and distributed configuration
-├── tests/                          # Unit and integration tests
 ├── .pre-commit-config.yaml         # Ruff and repository hygiene hooks
 ├── .python-version                 # Python version used by uv
 ├── environment.yml                # Reproducible CUDA/Conda environment
@@ -36,9 +28,8 @@ maestro/
 └── uv.lock                         # Cross-platform locked dependencies
 ```
 
-Large files under `data/raw/`, `data/processed/`, and `experiments/` are ignored
-by Git. Scientific sample filenames are preserved because manifests and source
-metadata use them as provenance-bearing identifiers.
+The local `data/`, `docs/`, and `.agents/` directories are ignored by Git.
+Generated experiment outputs are also excluded from version control.
 
 ## Data organization
 
@@ -51,7 +42,8 @@ Current model-ready cohorts live under `data/processed/`:
 Original AMP B-cell and T-cell FCS files live under `data/raw/amp/`.
 
 Directory labels use lowercase hyphenated names. Individual source-data
-filenames remain unchanged.
+filenames remain unchanged. The entire `data/` directory is local-only and is
+not included in the GitHub repository.
 
 ## Environment
 
@@ -75,7 +67,7 @@ uv run pytest
 ## Train MAESTRO
 
 The Python entry point is a driver only; model, data, and training logic live
-under `src/maestro/`.
+under `src/`.
 
 ```bash
 bash scripts/train-maestro.sh
@@ -96,9 +88,6 @@ Training outputs are written to `experiments/<project>/`.
 
 ## Notebooks
 
-- `inventory-allof-data-and-metadata.ipynb`: inventory HDF5 samples and link
-  them to cohort metadata
-- `inspect-allof-sample.ipynb`: inspect one HDF5 sample and its metadata
 - `analyze-maestro-results.ipynb`: reconstruct cells, extract embeddings, run
   downstream models, and inspect pooling attention
 
@@ -108,15 +97,6 @@ Launch notebooks from their directory so relative paths resolve consistently:
 cd notebooks
 uv run jupyter notebook
 ```
-
-## Research context
-
-The `docs/` directory contains:
-
-- `maestro-paper.pdf`
-- `cyto-diffusion-mirrors-paper.pdf`
-- `collaborator-data-transcript.txt`
-- `project-notes.md`
 
 ## License
 

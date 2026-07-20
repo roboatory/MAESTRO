@@ -1,13 +1,13 @@
 """MAESTRO training utilities."""
 
-from maestro.training.callbacks import (
+from src.training.callbacks import (
     DeepSpeedConfig,
     GradientClipCallback,
     SinkhornCheckpoint,
     UpdateTeacher,
     create_deep_speed_config,
 )
-from maestro.training.runner import TrainingConfiguration, run_training
+from src.training.runner import TrainingConfiguration, run_training
 
 __all__ = [
     "DeepSpeedConfig",

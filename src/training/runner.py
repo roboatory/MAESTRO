@@ -13,9 +13,9 @@ from lightning.pytorch.loggers import CSVLogger
 from lightning.pytorch.strategies import DeepSpeedStrategy
 from torch.utils.data import DataLoader, random_split
 
-from maestro.data import CyTOFDataset
-from maestro.models import MAESTROLightning
-from maestro.training.callbacks import (
+from src.data import CyTOFDataset
+from src.models import MAESTROLightning
+from src.training.callbacks import (
     SinkhornCheckpoint,
     UpdateTeacher,
     create_deep_speed_config,

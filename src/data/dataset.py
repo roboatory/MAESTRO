@@ -1,4 +1,4 @@
-"""Load cytometry samples from HDF5 files."""
+"""Load cytometry data from HDF5 files."""
 
 import json
 import os
