@@ -1,4 +1,4 @@
-name: maestro_rapids_env
+name: maestro-rapids-env
 channels:
   - defaults
   - r
