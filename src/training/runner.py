@@ -1,15 +1,17 @@
 """Configure and run MAESTRO training."""
 
+import hashlib
+import json
 import os
 import warnings
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
 import lightning
 import torch
 from lightning.pytorch import callbacks
-from lightning.pytorch.loggers import CSVLogger
+from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from lightning.pytorch.strategies import DeepSpeedStrategy
 from torch.utils.data import DataLoader, random_split
 
@@ -22,6 +24,45 @@ from src.training.callbacks import (
 )
 
 TrainingMode = Literal["Train", "Validate"]
+WandbMode = Literal["online", "offline", "disabled"]
+
+
+class LogRunConfiguration(callbacks.Callback):
+    """Log the resolved run settings after distributed ranks initialize."""
+
+    def __init__(
+        self,
+        configuration: "TrainingConfiguration",
+        runtime_parameters: dict[str, object],
+        artifact_paths: tuple[Path, ...],
+    ) -> None:
+        """Store JSON-compatible run parameters for logger backends."""
+        super().__init__()
+        self.parameters = {
+            name: list(value) if isinstance(value, tuple) else value
+            for name, value in asdict(configuration).items()
+        }
+        self.parameters.update(runtime_parameters)
+        self.artifact_paths = artifact_paths
+
+    def on_fit_start(
+        self,
+        trainer: lightning.Trainer,
+        pl_module: lightning.LightningModule,
+    ) -> None:
+        """Log parameters once from the global primary process."""
+        del pl_module
+        if not trainer.is_global_zero:
+            return
+        for logger in trainer.loggers:
+            logger.log_hyperparams(self.parameters)
+            if isinstance(logger, WandbLogger):
+                for path in self.artifact_paths:
+                    logger.experiment.save(
+                        str(path),
+                        base_path=str(path.parent),
+                        policy="now",
+                    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +73,7 @@ class TrainingConfiguration:
     devices: str
     data_directories: tuple[str, ...]
     marker_directories: tuple[str, ...] = ()
+    random_seed: int = 206
     number_cells_subset: int = 40_000
     input_dimension: int = 30
     number_inducing_points: int = 16
@@ -51,6 +93,14 @@ class TrainingConfiguration:
     mode: TrainingMode = "Train"
     removed_cell_types: tuple[str, ...] = ()
     resume_checkpoint: str | None = None
+    wandb_enabled: bool = False
+    wandb_project: str = "maestro"
+    wandb_entity: str | None = None
+    wandb_mode: WandbMode = "offline"
+    wandb_group: str | None = None
+    wandb_tags: tuple[str, ...] = ()
+    wandb_run_id: str | None = None
+    wandb_log_model: bool = False
 
     def __post_init__(self) -> None:
         """Validate scalar training settings."""
@@ -81,6 +131,17 @@ class TrainingConfiguration:
                 raise ValueError(f"{name} must be in the interval [0, 1)")
         if self.sinkhorn_start_epoch < 0:
             raise ValueError("sinkhorn_start_epoch must be non-negative")
+        if self.random_seed < 0:
+            raise ValueError("random_seed must be non-negative")
+        if self.wandb_mode not in ("online", "offline", "disabled"):
+            raise ValueError("wandb_mode must be online, offline, or disabled")
+        if self.wandb_enabled and not self.wandb_project.strip():
+            raise ValueError("wandb_project must not be empty when W&B is enabled")
+        if self.wandb_mode == "offline" and self.wandb_log_model:
+            raise ValueError(
+                "W&B checkpoint artifact logging requires online mode; local "
+                "checkpoints are still saved in offline mode"
+            )
 
 
 def _validate_input_dimension(
@@ -153,17 +214,105 @@ def _create_data_loader(
     )
 
 
-def _create_trainer(
+def _create_loggers(
     configuration: TrainingConfiguration,
-    deep_speed_config: dict[str, object],
     output_path: Path,
-) -> lightning.Trainer:
-    """Create a Lightning trainer for the requested run."""
-    logger = (
+) -> list[CSVLogger | WandbLogger]:
+    """Create durable local logging and optional W&B experiment tracking."""
+    csv_logger = (
         CSVLogger(save_dir="logs/", name=configuration.project_name)
         if configuration.mode == "Train"
         else CSVLogger(save_dir="logs/")
     )
+    loggers: list[CSVLogger | WandbLogger] = [csv_logger]
+    if not configuration.wandb_enabled or configuration.wandb_mode == "disabled":
+        return loggers
+
+    tags = list(configuration.wandb_tags)
+    slurm_job_id = os.environ.get("SLURM_JOB_ID")
+    if slurm_job_id is not None:
+        tags.append(f"slurm-job-{slurm_job_id}")
+    wandb_logger = WandbLogger(
+        project=configuration.wandb_project,
+        entity=configuration.wandb_entity,
+        name=configuration.project_name,
+        id=configuration.wandb_run_id,
+        group=configuration.wandb_group,
+        tags=tags,
+        save_dir=str(output_path),
+        offline=configuration.wandb_mode == "offline",
+        log_model=configuration.wandb_log_model,
+        resume="allow" if configuration.wandb_run_id else None,
+        job_type=configuration.mode.lower(),
+    )
+    loggers.append(wandb_logger)
+    return loggers
+
+
+def _write_dataset_manifest(
+    dataset: CyTOFDataset,
+    output_path: Path,
+) -> tuple[dict[str, object], tuple[Path, ...]]:
+    """Fingerprint the exact sample inventory and record the marker order."""
+    digest = hashlib.sha256()
+    files = []
+    total_bytes = 0
+    for sample_name, file_path in sorted(dataset.file_paths.items()):
+        size_bytes = file_path.stat().st_size
+        total_bytes += size_bytes
+        resolved_path = str(file_path.resolve())
+        files.append(
+            {
+                "sample": sample_name,
+                "path": resolved_path,
+                "size_bytes": size_bytes,
+            }
+        )
+        digest.update(f"{resolved_path}\0{size_bytes}\n".encode())
+
+    fingerprint = digest.hexdigest()
+    runtime_parameters = {
+        "dataset_sample_count": len(files),
+        "dataset_total_bytes": total_bytes,
+        "dataset_fingerprint": fingerprint,
+        "shared_markers": list(dataset.shared_markers),
+        "teacher_cell_count": dataset.subset_size,
+    }
+    runtime_parameters.update(
+        {
+            name.lower(): value
+            for name in (
+                "SLURM_JOB_ID",
+                "SLURM_ARRAY_JOB_ID",
+                "SLURM_ARRAY_TASK_ID",
+                "SLURM_JOB_NODELIST",
+            )
+            if (value := os.environ.get(name)) is not None
+        }
+    )
+    process_rank = int(os.environ.get("SLURM_PROCID", os.environ.get("RANK", "0")))
+    if process_rank != 0:
+        return runtime_parameters, ()
+
+    manifest = {
+        **runtime_parameters,
+        "fingerprint_method": "sha256(path, size_bytes)",
+        "files": files,
+    }
+    manifest_path = output_path / "dataset-manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    return runtime_parameters, (manifest_path,)
+
+
+def _create_trainer(
+    configuration: TrainingConfiguration,
+    deep_speed_config: dict[str, object],
+    output_path: Path,
+    runtime_parameters: dict[str, object],
+    artifact_paths: tuple[Path, ...],
+) -> lightning.Trainer:
+    """Create a Lightning trainer for the requested run."""
+    loggers = _create_loggers(configuration, output_path)
     trainer = lightning.Trainer(
         devices=configuration.devices,
         accelerator="cuda",
@@ -173,12 +322,15 @@ def _create_trainer(
         min_epochs=min(300, configuration.number_epochs),
         enable_model_summary=False,
         enable_progress_bar=False,
-        callbacks=_create_checkpoints(
-            output_path,
-            configuration.sinkhorn_start_epoch,
-        ),
+        callbacks=[
+            *_create_checkpoints(
+                output_path,
+                configuration.sinkhorn_start_epoch,
+            ),
+            LogRunConfiguration(configuration, runtime_parameters, artifact_paths),
+        ],
         log_every_n_steps=1,
-        logger=logger,
+        logger=loggers,
     )
     trainer.strategy.config["zero_force_ds_cpu_optimizer"] = False
     return trainer
@@ -191,7 +343,7 @@ def run_training(
     _configure_warning_filters()
     output_path = Path("experiments") / configuration.project_name
     output_path.mkdir(parents=True, exist_ok=True)
-    lightning.seed_everything(206, workers=True)
+    lightning.seed_everything(configuration.random_seed, workers=True)
 
     dataset = CyTOFDataset(
         configuration.data_directories,
@@ -201,6 +353,7 @@ def run_training(
     )
     dim_input = len(dataset.shared_markers)
     _validate_input_dimension(configuration.input_dimension, dim_input)
+    runtime_parameters, artifact_paths = _write_dataset_manifest(dataset, output_path)
 
     if int(os.environ.get("LOCAL_RANK", "0")) == 0:
         print(f"Project: {configuration.project_name}")
@@ -229,9 +382,25 @@ def run_training(
     )
 
     deep_speed_config = create_deep_speed_config()
+    runtime_parameters.update(
+        {
+            "precision": "bf16-mixed",
+            "train_batch_size": deep_speed_config["train_batch_size"],
+            "train_micro_batch_size_per_gpu": deep_speed_config[
+                "train_micro_batch_size_per_gpu"
+            ],
+            "gradient_clipping": deep_speed_config["gradient_clipping"],
+        }
+    )
     batch_size = int(deep_speed_config["train_micro_batch_size_per_gpu"])
     if configuration.mode == "Train":
-        trainer = _create_trainer(configuration, deep_speed_config, output_path)
+        trainer = _create_trainer(
+            configuration,
+            deep_speed_config,
+            output_path,
+            runtime_parameters,
+            artifact_paths,
+        )
         training_data_loader = _create_data_loader(
             dataset,
             batch_size,
@@ -255,7 +424,7 @@ def run_training(
 
     training_sample_count = int(len(dataset) * 0.9)
     validation_sample_count = len(dataset) - training_sample_count
-    generator = torch.Generator().manual_seed(206)
+    generator = torch.Generator().manual_seed(configuration.random_seed)
     training_set, validation_set = random_split(
         dataset,
         [training_sample_count, validation_sample_count],
@@ -271,7 +440,13 @@ def run_training(
         batch_size,
         shuffle=False,
     )
-    trainer = _create_trainer(configuration, deep_speed_config, output_path)
+    trainer = _create_trainer(
+        configuration,
+        deep_speed_config,
+        output_path,
+        runtime_parameters,
+        artifact_paths,
+    )
     trainer.fit(
         model=model,
         train_dataloaders=training_data_loader,

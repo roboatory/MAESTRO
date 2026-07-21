@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=28
 #SBATCH --mem=896G
 #SBATCH --gres=gpu:4
-#SBATCH --time=7-00:00:00
+#SBATCH --time=5-00:00:00
 #SBATCH --output=output/%x_%j.log
 #SBATCH --error=output/%x_%j.log
 
@@ -20,13 +20,9 @@ DATA_DIRECTORIES=(
     "${DATA_ROOT}/prepro"
 )
 
-PROJECT_NAME="${PROJECT_NAME:-maestro-allof-prepro-${SLURM_JOB_ID}}"
-NUMBER_EPOCHS="${NUMBER_EPOCHS:-500}"
-NUMBER_OUTPUTS="${NUMBER_OUTPUTS:-5000}"
-SINKHORN_START_EPOCH="${SINKHORN_START_EPOCH:-25}"
-RESUME_CHECKPOINT="${RESUME_CHECKPOINT:-}"
+PROJECT_NAME="maestro-allof-prepro-${SLURM_JOB_ID}"
 
-RUN_DIRECTORY="${PROJECT_ROOT}/output/${PROJECT_NAME}"
+RUN_DIRECTORY="${PROJECT_ROOT}/experiments/${PROJECT_NAME}/job"
 METRICS_PATH="${RUN_DIRECTORY}/gpu.csv"
 CACHE_ROOT="${SLURM_TMPDIR:-/tmp}/${USER}/maestro-${SLURM_JOB_ID}"
 
@@ -38,6 +34,9 @@ module load cuda/12.8.1
 export PYTHONUNBUFFERED=1
 export TRITON_CACHE_DIR="${CACHE_ROOT}/triton"
 export KEOPS_CACHE_FOLDER="${CACHE_ROOT}/keops"
+CUDA_LIBRARY_DIRECTORY="${CUDA_HOME}/targets/x86_64-linux/lib"
+export LD_LIBRARY_PATH="${CUDA_LIBRARY_DIRECTORY}:${LD_LIBRARY_PATH:-}"
+export LIBRARY_PATH="${CUDA_LIBRARY_DIRECTORY}:${LIBRARY_PATH:-}"
 
 if ! command -v uv >/dev/null 2>&1; then
     echo "uv is required but was not found on PATH" >&2
@@ -61,10 +60,10 @@ if [[ "${TOTAL_FILE_COUNT}" -eq 0 ]]; then
 fi
 
 # Resolve the locked environment once before the distributed workers start.
-uv sync --frozen --no-dev
+uv sync --frozen --no-dev --inexact
 
-if [[ ! -x "${PROJECT_ROOT}/.venv/bin/maestro-train" ]]; then
-    echo "The maestro-train entry point was not installed" >&2
+if [[ ! -x "${PROJECT_ROOT}/.venv/bin/maestro-run" ]]; then
+    echo "The maestro-run entry point was not installed" >&2
     exit 1
 fi
 
@@ -76,14 +75,9 @@ if [[ "${DEVICE_COUNT}" -ne "${SLURM_NTASKS}" ]]; then
     exit 1
 fi
 
-if [[ "${DEVICE_COUNT}" -eq 1 ]]; then
-    DEVICE_IDS="0,"
-else
-    DEVICE_IDS=$(seq --separator=, 0 "$((DEVICE_COUNT - 1))")
-fi
-
-if [[ -n "${RESUME_CHECKPOINT}" && ! -f "${RESUME_CHECKPOINT}" ]]; then
-    echo "Resume checkpoint does not exist: ${RESUME_CHECKPOINT}" >&2
+if ! .venv/bin/python -c \
+    "import pykeops; raise SystemExit(0 if pykeops.config.gpu_available else 1)"; then
+    echo "PyKeOps could not initialize its CUDA backend" >&2
     exit 1
 fi
 
@@ -92,15 +86,15 @@ git status --short > "${RUN_DIRECTORY}/git-status.txt"
 git diff --binary HEAD > "${RUN_DIRECTORY}/uncommitted-changes.patch"
 sha256sum uv.lock > "${RUN_DIRECTORY}/uv-lock.sha256"
 cp "$0" "${RUN_DIRECTORY}/submitted.slurm"
+cp configs/train.yaml "${RUN_DIRECTORY}/base-config.yaml"
+scontrol show job "${SLURM_JOB_ID}" --oneliner \
+    > "${RUN_DIRECTORY}/slurm-allocation.txt"
 
 echo "Job ID: ${SLURM_JOB_ID}"
 echo "Node: $(hostname)"
 echo "Project: ${PROJECT_NAME}"
 echo "Input files: ${TOTAL_FILE_COUNT} (${ALLOF_FILE_COUNT} allof + ${PREPRO_FILE_COUNT} prepro)"
-echo "Epochs: ${NUMBER_EPOCHS}"
-echo "Reconstruction outputs: ${NUMBER_OUTPUTS}"
-echo "Sinkhorn start epoch: ${SINKHORN_START_EPOCH}"
-echo "CUDA devices: ${DEVICE_IDS}"
+echo "CUDA devices: 0,1,2,3"
 echo "CUDA_HOME: ${CUDA_HOME}"
 echo "Started: $(date --iso-8601=seconds)"
 nvidia-smi --query-gpu=index,name,memory.total,driver_version \
@@ -120,41 +114,24 @@ nvidia-smi --query-gpu=index,name,memory.total,driver_version \
 GPU_MONITOR_PID=$!
 
 cleanup() {
+    exit_status=$?
+    trap - EXIT
     kill "${GPU_MONITOR_PID}" 2>/dev/null || true
+    wait "${GPU_MONITOR_PID}" 2>/dev/null || true
+    printf '%s\n' "${exit_status}" > "${RUN_DIRECTORY}/exit-status.txt"
+    sacct -j "${SLURM_JOB_ID}" --parsable2 \
+        --format=JobIDRaw,JobName,Submit,Eligible,Start,ElapsedRaw,State,ExitCode,AllocTRES,MaxRSS \
+        > "${RUN_DIRECTORY}/slurm-accounting.csv" || true
+    echo "Finished: $(date --iso-8601=seconds) (exit status ${exit_status})"
+    exit "${exit_status}"
 }
 trap cleanup EXIT
 
-TRAINING_ARGUMENTS=(
-    --project "${PROJECT_NAME}"
-    --devices "${DEVICE_IDS}"
-    --data_dirs "${DATA_DIRECTORIES[@]}"
-    --number_cells_subset 40000
-    --dim_input 30
-    --num_outputs "${NUMBER_OUTPUTS}"
-    --num_inds 16
-    --dim_hidden 384
-    --dim_latent 256
-    --num_heads 1
-    --ln
-    --initial_lr 1e-4
-    --min_lr 1e-12
-    --epochs "${NUMBER_EPOCHS}"
-    --sinkhorn_start "${SINKHORN_START_EPOCH}"
-    --student_temperature 0.10
-    --teacher_temperature 0.07
-    --center_momentum 0.99
-    --teacher_beta 0.99
-    --mode Train
-)
-
-if [[ -n "${RESUME_CHECKPOINT}" ]]; then
-    TRAINING_ARGUMENTS+=(--ckpt_resume "${RESUME_CHECKPOINT}")
-fi
+.venv/bin/maestro-run \
+    --cfg job \
+    --resolve > "${RUN_DIRECTORY}/resolved-config.yaml"
 
 /usr/bin/time -v srun \
     --kill-on-bad-exit=1 \
     --cpu-bind=cores \
-    .venv/bin/maestro-train \
-    "${TRAINING_ARGUMENTS[@]}"
-
-echo "Finished: $(date --iso-8601=seconds)"
+    .venv/bin/maestro-run

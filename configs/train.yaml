@@ -1,0 +1,48 @@
+run:
+  name: maestro-allof-prepro-${oc.env:SLURM_JOB_ID,local}
+
+training:
+  devices: "0,1,2,3"
+  data_directories:
+    - data/raw/preprocessed-cyto-sources/allof
+    - data/raw/preprocessed-cyto-sources/prepro
+  marker_directories: []
+  random_seed: 206
+  number_cells_subset: 40000
+  input_dimension: 30
+  number_inducing_points: 16
+  hidden_dimension: 384
+  latent_dimension: 256
+  number_attention_heads: 1
+  layer_normalization: true
+  initial_learning_rate: 0.0001
+  minimum_learning_rate: 1.0e-12
+  number_epochs: 500
+  sinkhorn_start_epoch: 25
+  number_outputs: 5000
+  student_temperature: 0.10
+  teacher_temperature: 0.07
+  center_momentum: 0.99
+  teacher_beta: 0.99
+  mode: Train
+  removed_cell_types: []
+  resume_checkpoint: null
+
+tracking:
+  enabled: true
+  project: maestro
+  entity: null
+  mode: offline
+  group: paper-reproduction
+  tags:
+    - allof-prepro
+    - paper-reproduction
+  run_id: null
+  log_model: false
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: experiments/${run.name}/hydra/rank-${oc.env:SLURM_LOCALID,0}
+  output_subdir: .hydra

@@ -13,6 +13,7 @@ def parse_args() -> TrainingConfiguration:
     parser.add_argument("--devices", type=str, default="0", help="GPU devices")
     parser.add_argument("--data_dirs", dest="data_directories", nargs="+", required=True, type=str, help="Data directories (used for training)")  # noqa: E501
     parser.add_argument("--marker_dirs", dest="marker_directories", nargs="+", default=None, type=str, help="Marker-only directories included in the shared-marker intersection but not used for training")  # noqa: E501
+    parser.add_argument("--seed", dest="random_seed", type=int, default=206, help="Random seed")  # noqa: E501
     parser.add_argument("--number_cells_subset", dest="number_cells_subset", type=int, default=40_000, help="Cells in the student subset")  # noqa: E501
     parser.add_argument("--dim_input", dest="input_dimension", type=int, default=30, help="Input dimension per cell")  # noqa: E501
     parser.add_argument("--num_inds", dest="number_inducing_points", type=int, default=16, help="IPAB inducing points")  # noqa: E501
@@ -32,6 +33,14 @@ def parse_args() -> TrainingConfiguration:
     parser.add_argument("--mode", type=str, choices=("Train", "Validate"), default="Train", help="Train or Validate")  # noqa: E501
     parser.add_argument("--cell_type_removal", dest="removed_cell_types", type=str, nargs="+", default=None, help="Cell types to filter")  # noqa: E501
     parser.add_argument("--ckpt_resume", dest="resume_checkpoint", type=str, default=None, help="Checkpoint path to resume")  # noqa: E501
+    parser.add_argument("--wandb", dest="wandb_enabled", action=argparse.BooleanOptionalAction, default=False, help="Enable Weights & Biases tracking")  # noqa: E501
+    parser.add_argument("--wandb_project", type=str, default="maestro", help="Weights & Biases project")  # noqa: E501
+    parser.add_argument("--wandb_entity", type=str, default=None, help="Weights & Biases entity or team")  # noqa: E501
+    parser.add_argument("--wandb_mode", choices=("online", "offline", "disabled"), default="offline", help="Weights & Biases connection mode")  # noqa: E501
+    parser.add_argument("--wandb_group", type=str, default=None, help="Weights & Biases run group")  # noqa: E501
+    parser.add_argument("--wandb_tag", dest="wandb_tags", action="append", default=[], help="Repeatable Weights & Biases tag")  # noqa: E501
+    parser.add_argument("--wandb_run_id", type=str, default=None, help="Stable Weights & Biases run ID used for resume")  # noqa: E501
+    parser.add_argument("--wandb_log_model", action=argparse.BooleanOptionalAction, default=False, help="Upload model checkpoints as W&B artifacts")  # noqa: E501
     # fmt: on
     arguments = parser.parse_args()
     return TrainingConfiguration(
@@ -39,6 +48,7 @@ def parse_args() -> TrainingConfiguration:
         devices=arguments.devices,
         data_directories=tuple(arguments.data_directories),
         marker_directories=tuple(arguments.marker_directories or ()),
+        random_seed=arguments.random_seed,
         number_cells_subset=arguments.number_cells_subset,
         input_dimension=arguments.input_dimension,
         number_inducing_points=arguments.number_inducing_points,
@@ -58,6 +68,14 @@ def parse_args() -> TrainingConfiguration:
         mode=arguments.mode,
         removed_cell_types=tuple(arguments.removed_cell_types or ()),
         resume_checkpoint=arguments.resume_checkpoint,
+        wandb_enabled=arguments.wandb_enabled,
+        wandb_project=arguments.wandb_project,
+        wandb_entity=arguments.wandb_entity,
+        wandb_mode=arguments.wandb_mode,
+        wandb_group=arguments.wandb_group,
+        wandb_tags=tuple(arguments.wandb_tags),
+        wandb_run_id=arguments.wandb_run_id,
+        wandb_log_model=arguments.wandb_log_model,
     )
 
 
