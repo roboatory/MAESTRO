@@ -28,7 +28,7 @@ TrainingMode = Literal["Train", "Validate"]
 class TrainingConfiguration:
     """Store the settings required for a training or validation run."""
 
-    project_name: str | None
+    project_name: str
     devices: str
     data_directories: tuple[str, ...]
     marker_directories: tuple[str, ...] = ()
@@ -37,20 +37,63 @@ class TrainingConfiguration:
     number_inducing_points: int = 16
     hidden_dimension: int = 384
     latent_dimension: int = 256
-    number_attention_heads: int = 4
+    number_attention_heads: int = 1
     layer_normalization: bool = True
     initial_learning_rate: float = 1e-4
     minimum_learning_rate: float = 1e-12
-    number_epochs: int = 1_000
+    number_epochs: int = 500
     sinkhorn_start_epoch: int = 25
-    number_outputs: int = 40_000
-    student_temperature: float = 0.11
-    teacher_temperature: float = 0.04
+    number_outputs: int = 5_000
+    student_temperature: float = 0.10
+    teacher_temperature: float = 0.07
     center_momentum: float = 0.99
-    teacher_beta: float = 0.9995
+    teacher_beta: float = 0.99
     mode: TrainingMode = "Train"
     removed_cell_types: tuple[str, ...] = ()
     resume_checkpoint: str | None = None
+
+    def __post_init__(self) -> None:
+        """Validate scalar training settings."""
+        positive_values = {
+            "number_cells_subset": self.number_cells_subset,
+            "input_dimension": self.input_dimension,
+            "number_inducing_points": self.number_inducing_points,
+            "hidden_dimension": self.hidden_dimension,
+            "latent_dimension": self.latent_dimension,
+            "number_attention_heads": self.number_attention_heads,
+            "initial_learning_rate": self.initial_learning_rate,
+            "minimum_learning_rate": self.minimum_learning_rate,
+            "number_epochs": self.number_epochs,
+            "number_outputs": self.number_outputs,
+            "student_temperature": self.student_temperature,
+            "teacher_temperature": self.teacher_temperature,
+        }
+        invalid_names = [name for name, value in positive_values.items() if value <= 0]
+        if invalid_names:
+            raise ValueError(
+                f"Training settings must be positive: {', '.join(invalid_names)}"
+            )
+        for name, value in {
+            "center_momentum": self.center_momentum,
+            "teacher_beta": self.teacher_beta,
+        }.items():
+            if not 0 <= value < 1:
+                raise ValueError(f"{name} must be in the interval [0, 1)")
+        if self.sinkhorn_start_epoch < 0:
+            raise ValueError("sinkhorn_start_epoch must be non-negative")
+
+
+def _validate_input_dimension(
+    configured_dimension: int,
+    inferred_dimension: int,
+) -> None:
+    """Ensure the configured input width matches the shared marker panel."""
+    if configured_dimension != inferred_dimension:
+        raise ValueError(
+            "Configured input dimension "
+            f"{configured_dimension} does not match the "
+            f"{inferred_dimension}-marker shared data panel"
+        )
 
 
 def _configure_warning_filters() -> None:
@@ -127,7 +170,7 @@ def _create_trainer(
         strategy=DeepSpeedStrategy(config=deep_speed_config),
         precision="bf16-mixed",
         max_epochs=configuration.number_epochs,
-        min_epochs=300,
+        min_epochs=min(300, configuration.number_epochs),
         enable_model_summary=False,
         enable_progress_bar=False,
         callbacks=_create_checkpoints(
@@ -157,6 +200,7 @@ def run_training(
         cell_type_removal=configuration.removed_cell_types,
     )
     dim_input = len(dataset.shared_markers)
+    _validate_input_dimension(configuration.input_dimension, dim_input)
 
     if int(os.environ.get("LOCAL_RANK", "0")) == 0:
         print(f"Project: {configuration.project_name}")
@@ -178,6 +222,8 @@ def run_training(
         output_path=output_path,
         student_temperature=configuration.student_temperature,
         teacher_temperature=configuration.teacher_temperature,
+        center_momentum=configuration.center_momentum,
+        teacher_beta=configuration.teacher_beta,
         num_outputs=configuration.number_outputs,
         sinkhorn_start=configuration.sinkhorn_start_epoch,
     )

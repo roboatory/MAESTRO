@@ -16,7 +16,7 @@ import umap
 from entmax import entmax_bisect
 from geomloss import SamplesLoss
 from pytorch_lightning.utilities import rank_zero_only
-from torch import nn
+from torch import distributed, nn
 from torch.nn import functional
 
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "OFF"
@@ -32,7 +32,15 @@ def ruler_masking(
     """Mask cells from one extreme of the first principal component."""
     batch_size, number_cells, _ = input_tensor.shape
     device = input_tensor.device
-    number_masked = max(1, int(number_cells * mask_ratio))
+    number_masked = int(number_cells * mask_ratio)
+
+    if number_masked == 0:
+        return torch.zeros(
+            batch_size,
+            number_cells,
+            device=device,
+            dtype=torch.bool,
+        )
 
     float_input = input_tensor.float()
     centered_input = float_input - float_input.mean(dim=1, keepdim=True)
@@ -430,8 +438,8 @@ class SetTransformer(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Pool encoded cells into a sample representation."""
         pooled, pooling_attention = self.pma(input_tensor)
-        projection = functional.softmax(self.project(pooled), dim=-1)
-        return pooled, projection, pooling_attention
+        projection_logits = self.project(pooled)
+        return pooled, projection_logits, pooling_attention
 
     def forward_decoder(
         self,
@@ -491,6 +499,8 @@ class MAESTRO(nn.Module):
         student_temperature: float,
         teacher_temperature: float,
         sinkhorn_start: int = 0,
+        center_momentum: float = 0.99,
+        teacher_beta: float = 0.99,
     ) -> None:
         """Initialize student and momentum-teacher networks."""
         super().__init__()
@@ -508,10 +518,10 @@ class MAESTRO(nn.Module):
         self.sinkhorn_loss = SamplesLoss(loss="sinkhorn", p=2, verbose=False)
         self.use_sinkhorn = sinkhorn_start == 0
         self.student_temperature = student_temperature
-        self.initial_teacher_temperature = teacher_temperature
-        self.current_teacher_temperature = teacher_temperature
-        self.temperature_step = 0.01
-        self.center_latent = torch.ones((1, dim_latent))
+        self.teacher_temperature = teacher_temperature
+        self.center_momentum = center_momentum
+        self.teacher_beta = teacher_beta
+        self.register_buffer("center_latent", torch.ones((1, dim_latent)))
         self.cell_token = nn.Parameter(torch.zeros(1, dim_input))
 
         self.student = SetTransformer(
@@ -566,13 +576,12 @@ class MAESTRO(nn.Module):
     def calculate_kl_divergence(
         self,
         student_logits: torch.Tensor,
-        teacher_logits: torch.Tensor,
+        teacher_probabilities: torch.Tensor,
     ) -> torch.Tensor:
         """Calculate divergence between student and teacher projections."""
         student_log_probabilities = functional.log_softmax(
             student_logits / self.student_temperature, dim=-1
         )
-        teacher_probabilities = functional.softmax(teacher_logits, dim=-1) + 1e-9
         return functional.kl_div(
             student_log_probabilities,
             teacher_probabilities,
@@ -587,16 +596,18 @@ class MAESTRO(nn.Module):
         """Center and sharpen a teacher projection."""
         centered_output = teacher_output - teacher_center.unsqueeze(0)
         sharpened_output = torch.softmax(
-            centered_output / self.current_teacher_temperature, dim=-1
+            centered_output / self.teacher_temperature, dim=-1
         )
         return sharpened_output
 
     @torch.no_grad()
     def _update_teacher(
         self,
-        beta: float = 0.995,
+        beta: float | None = None,
     ) -> None:
         """Update teacher parameters using student parameter momentum."""
+        if beta is None:
+            beta = self.teacher_beta
         for (_, student_parameter), (_, teacher_parameter) in zip(
             self.student.named_parameters(),
             self.teacher.named_parameters(),
@@ -612,21 +623,27 @@ class MAESTRO(nn.Module):
         self,
         teacher_output: torch.Tensor,
         teacher_center: torch.Tensor,
-        momentum: float = 0.9,
+        momentum: float | None = None,
     ) -> None:
         """Update the teacher projection center using momentum."""
-        current_mean = teacher_output.mean(dim=0)
-        teacher_center.data = teacher_center.data.to(current_mean)
-        teacher_center *= momentum
-        teacher_center += (1 - momentum) * current_mean
+        if momentum is None:
+            momentum = self.center_momentum
 
-    def update_temperature(self) -> None:
-        """Increase the teacher temperature until it matches the student."""
-        if self.current_teacher_temperature < self.student_temperature:
-            self.current_teacher_temperature = min(
-                self.current_teacher_temperature + self.temperature_step,
-                self.student_temperature,
-            )
+        teacher_sum = teacher_output.detach().float().sum(dim=0)
+        teacher_count = torch.tensor(
+            teacher_output.shape[0],
+            device=teacher_output.device,
+            dtype=torch.float32,
+        )
+        if distributed.is_available() and distributed.is_initialized():
+            distributed.all_reduce(teacher_sum)
+            distributed.all_reduce(teacher_count)
+
+        current_mean = teacher_sum / teacher_count.clamp_min(1.0)
+        teacher_center.mul_(momentum).add_(
+            current_mean.to(teacher_center),
+            alpha=1 - momentum,
+        )
 
     def forward(
         self,
@@ -665,20 +682,22 @@ class MAESTRO(nn.Module):
         mask = ruler_masking(input_subset, mask_rate)
         masked_input = input_subset[~mask].view(batch_size, -1, marker_count)
 
-        student_prediction, student_projection, *_ = self.student(
+        student_prediction, student_projection_logits, *_ = self.student(
             masked_input,
             mask,
         )
 
         with torch.no_grad():
             teacher_latent, *_ = self.teacher.forward_encoder(input_tensor)
-            _, teacher_projection, _ = self.teacher.forward_pooling(teacher_latent)
+            _, teacher_projection_logits, _ = self.teacher.forward_pooling(
+                teacher_latent
+            )
 
-        self.update_center(teacher_projection, self.center_latent)
-        teacher_projection_sharpened = self.apply_centering_and_sharpening(
-            teacher_projection,
+        teacher_probabilities = self.apply_centering_and_sharpening(
+            teacher_projection_logits,
             self.center_latent,
         )
+        self.update_center(teacher_projection_logits, self.center_latent)
 
         reconstruction_loss_function = (
             self.sinkhorn_loss if self.use_sinkhorn else self.energy_loss
@@ -689,8 +708,8 @@ class MAESTRO(nn.Module):
         ).mean()
 
         distillation_loss = self.calculate_kl_divergence(
-            student_projection,
-            teacher_projection_sharpened,
+            student_projection_logits,
+            teacher_probabilities,
         )
         loss = reconstruction_loss + distillation_loss
 
@@ -724,23 +743,27 @@ class MAESTROLightning(lightning.LightningModule):
         teacher_temperature: float,
         output_path: str | Path,
         sinkhorn_start: int = 0,
+        center_momentum: float = 0.99,
+        teacher_beta: float = 0.99,
     ) -> None:
         """Initialize the Lightning training module."""
         super().__init__()
         self.save_hyperparameters()
         self.model = MAESTRO(
-            self.hparams.dim_input,
-            self.hparams.dim_output,
-            self.hparams.num_inds,
-            self.hparams.dim_hidden,
-            self.hparams.dim_latent,
-            self.hparams.num_heads,
-            self.hparams.num_outputs,
-            self.hparams.ln,
-            self.hparams.number_cells_subset,
-            self.hparams.student_temperature,
-            self.hparams.teacher_temperature,
-            self.hparams.sinkhorn_start,
+            dim_input=self.hparams.dim_input,
+            dim_output=self.hparams.dim_output,
+            num_inds=self.hparams.num_inds,
+            dim_hidden=self.hparams.dim_hidden,
+            dim_latent=self.hparams.dim_latent,
+            num_heads=self.hparams.num_heads,
+            num_outputs=self.hparams.num_outputs,
+            ln=self.hparams.ln,
+            number_cells_subset=self.hparams.number_cells_subset,
+            student_temperature=self.hparams.student_temperature,
+            teacher_temperature=self.hparams.teacher_temperature,
+            sinkhorn_start=self.hparams.sinkhorn_start,
+            center_momentum=self.hparams.center_momentum,
+            teacher_beta=self.hparams.teacher_beta,
         )
         self.epoch_start_time = 0
         self.epoch_loss = []
@@ -827,6 +850,8 @@ class MAESTROLightning(lightning.LightningModule):
             "epochs": self.hparams.epochs,
             "student_temperature": self.hparams.student_temperature,
             "teacher_temperature": self.hparams.teacher_temperature,
+            "center_momentum": self.hparams.center_momentum,
+            "teacher_beta": self.hparams.teacher_beta,
             "sinkhorn_start": self.hparams.sinkhorn_start,
             "output_path": self.hparams.output_path,
         }
@@ -842,16 +867,12 @@ class MAESTROLightning(lightning.LightningModule):
         print(f"🕰️ Time to train entire model was {model_duration:.2f} seconds 🕰️")
         print(f"Training finished at 🗓️ {time.strftime('%a, %d %b %Y %H:%M:%S')}")
 
-    @rank_zero_only
     def on_train_epoch_start(self) -> None:
         """Start epoch-time measurement."""
         self.epoch_start_time = time.time()
 
-    @rank_zero_only
     def on_train_epoch_end(self) -> None:
-        """Update schedules, report metrics, and visualize reconstructions."""
-        self.model.update_temperature()
-
+        """Clear epoch state and report metrics on the primary rank."""
         average_loss = torch.stack(self.epoch_loss).mean().item()
         average_reconstruction_loss = torch.stack(self.epoch_sinkhorn).mean().item()
         average_distillation_loss = torch.stack(self.epoch_distillation).mean().item()
@@ -860,6 +881,9 @@ class MAESTROLightning(lightning.LightningModule):
         self.epoch_loss.clear()
         self.epoch_sinkhorn.clear()
         self.epoch_distillation.clear()
+
+        if self.global_rank != 0:
+            return
 
         loss_name = "sinkhorn" if self.model.use_sinkhorn else "energy"
         print(

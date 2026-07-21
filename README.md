@@ -67,10 +67,16 @@ uv run pytest
 ## Train MAESTRO
 
 The Python entry point is a driver only; model, data, and training logic live
-under `src/`.
+under `src/`. Cluster launchers live under `jobs/`.
 
 ```bash
 bash scripts/train-maestro.sh
+```
+
+Submit the B200 smoke-test job with:
+
+```bash
+sbatch jobs/train-maestro-toy.slurm
 ```
 
 Or invoke the driver directly:
@@ -88,6 +94,10 @@ Training outputs are written to `experiments/<project>/`.
 
 ## Notebooks
 
+- `01-inventory-original-allof-prepro.ipynb`: inventory and reconcile the
+  available legacy whole-blood pretraining snapshot
+- `02-explore-original-allof-prepro-cells.ipynb`: memory-safe marker,
+  population, projection, and subsampling EDA
 - `analyze-maestro-results.ipynb`: reconstruct cells, extract embeddings, run
   downstream models, and inspect pooling attention
 
@@ -95,7 +105,7 @@ Launch notebooks from their directory so relative paths resolve consistently:
 
 ```bash
 cd notebooks
-uv run jupyter notebook
+uv run --group analysis jupyter notebook
 ```
 
 ## License
