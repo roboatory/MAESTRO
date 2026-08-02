@@ -1,16 +1,21 @@
-# Python
+.venv/
 __pycache__/
 *.py[cod]
+*.so
+.Python
+dist/
+build/
 *.egg-info/
 .ipynb_checkpoints/
-
-# Training artifacts (output/training/ holds the bundled demo checkpoint and is kept)
-logs/
-output/*/
-!output/training/
-
-# OS
+.ruff_cache/
+.env
+.env.*
 .DS_Store
+/.agents/
+/data/
+/docs/
 
-# Local Claude Code config
-.claude/
+experiments/
+
+*.ckpt
+*.pth
