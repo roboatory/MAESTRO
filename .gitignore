@@ -12,10 +12,24 @@ build/
 .env.*
 .DS_Store
 /.agents/
-/data/
 /docs/
+
+/data/*
+!/data/__init__.py
+!/data/00-convert-csv-to-h5.ipynb
+!/data/csv/
+!/data/csv/**
+!/data/h5/
+!/data/h5/**
 
 experiments/
 
+/output/*
+
 *.ckpt
 *.pth
+
+!/output/training/
+!/output/training/ToyModel/
+!/output/training/ToyModel/config.pth
+!/output/training/ToyModel/model.ckpt

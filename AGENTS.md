@@ -31,14 +31,21 @@ experiment variants in this repository.
   per-sample cell sampling.
 - `src/training/callbacks.py`: DeepSpeed configuration, teacher EMA, and
   Sinkhorn-phase checkpoint behavior.
-- `notebooks/`: data inventory, cell-level EDA, and result analysis.
-- `data/`, `docs/`, and `experiments/` are local-only and ignored by Git. Every
-  generated artifact for a run belongs under that run's `experiments/`
-  directory. Never assume these directories exist in a fresh clone.
+- `notebooks/01-explore-original-immune-health.ipynb`: cell-level EDA for the
+  original local `allof + prepro` snapshot.
+- `notebooks/02-analyze-upstream-demo.ipynb`: the adapted upstream ToyModel
+  analysis.
+- `data/csv/` and `data/h5/`: tracked synthetic demo fixtures from upstream.
+- `data/00-convert-csv-to-h5.ipynb`: optional reproducibility path for rebuilding
+  the tracked synthetic HDF5 fixtures from their CSV sources.
+- `output/training/ToyModel/`: the tracked upstream demo checkpoint and config.
+- `data/raw/`, `docs/`, and `experiments/` are local-only and ignored by Git.
+  Every generated artifact for a run belongs under that run's `experiments/`
+  directory. Never assume the local-only directories exist in a fresh clone.
 
-`README.md` is intentionally absent. Do not recreate it unless explicitly asked.
-`CLAUDE.md` must remain a symlink to this file so both tools receive identical
-instructions.
+`README.md` documents both the packaged production workflow and the distributable
+upstream demo. Keep its commands consistent with the current tree. `CLAUDE.md`
+must remain a symlink to this file so both tools receive identical instructions.
 
 The Git history is rooted in `matthew-lee1/MAESTRO`'s rewritten public history.
 Use the configured `upstream` remote to review later public changes. Preserve the
@@ -109,6 +116,10 @@ The closest available paper-replication snapshot is the union of:
 - `prepro`: 178 HDF5 samples.
 - Combined: 1,870 samples and approximately 418.25 million cells.
 
+The repository also tracks 40 small synthetic upstream demo samples split evenly
+between `dataA` and `dataB`. They are documentation and analysis fixtures, not
+members of the production training manifest.
+
 The manuscript reports 1,792 samples, so the local run is an approximate rather
 than byte-for-byte replication of the published training manifest.
 
@@ -131,7 +142,9 @@ sorted marker intersection across input directories, downsamples samples above
 replacement. Duplicate HDF5 stems across input directories are an error.
 
 Do not rename, rewrite, normalize, or delete local biological data without an
-explicit request. Data paths are intentionally excluded from Git.
+explicit request. Production data under `data/raw/` is intentionally excluded
+from Git; the synthetic `data/csv/` and `data/h5/` fixtures are intentional
+tracked exceptions.
 
 ## Model and objective details
 
@@ -232,7 +245,9 @@ For Slurm job `<JOB_ID>`, outputs are rooted at
 - checkpoints and reconstruction visualizations.
 
 Lightning CSV metrics and Slurm stdout/stderr live inside the owning run
-directory. Never commit generated runs, local data, or credentials.
+directory. `output/training/ToyModel/` is a tracked upstream fixture, not a valid
+destination for new runs. Never commit generated runs, local biological data, or
+credentials.
 
 ## Change discipline
 
@@ -245,5 +260,6 @@ directory. Never commit generated runs, local data, or credentials.
 - Record assumptions and distinguish manuscript settings, current implementation
   settings, and experimentally validated behavior.
 - Use `rg`/`rg --files` for repository searches and focused validation of changes.
-- Never commit secrets, local datasets, generated checkpoints, or ignored
-  manuscripts/project notes.
+- Never commit secrets, local biological datasets, generated checkpoints, or
+  ignored manuscripts/project notes. The upstream synthetic data and ToyModel are
+  the only tracked data/checkpoint exceptions.
