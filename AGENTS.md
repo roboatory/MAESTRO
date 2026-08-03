@@ -37,9 +37,9 @@ The training system has five main layers:
   run provenance.
 - `notebooks/`: numbered exploratory and post-training analyses.
 - `data/csv/` and `data/h5/`: tracked synthetic fixtures from the public release.
-- `output/training/ToyModel/`: tracked public ToyModel checkpoint and config.
 - `data/raw/`: ignored local biological data.
 - `experiments/`: ignored, self-contained generated training runs.
+- `output/`: ignored local or legacy output artifacts.
 
 `README.md` mirrors the public upstream project. `CLAUDE.md` must remain a
 symlink to this file so both tools receive the same repository context.
@@ -47,10 +47,10 @@ symlink to this file so both tools receive the same repository context.
 ## Data and artifact boundaries
 
 Production biological data is local and must not be committed, rewritten, or
-deleted without an explicit request. The tracked synthetic data and ToyModel are
-documentation and analysis fixtures, not part of the production training
+deleted without an explicit request. The tracked synthetic data is a
+documentation and analysis fixture, not part of the production training
 manifest. New training outputs belong under their owning directory in
-`experiments/`; the tracked ToyModel directory is not an output destination.
+`experiments/`.
 
 ## Development principles
 
