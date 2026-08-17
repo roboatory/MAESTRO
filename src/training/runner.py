@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader
 
 from src.data.dataset import CyTOFDataset
 from src.models.maestro import MAESTROLightning
+from src.training.artifacts import prune_completed_run_artifacts
 from src.training.callbacks import (
     SinkhornCheckpoint,
     UpdateTeacher,
@@ -48,6 +49,8 @@ class TrainingConfiguration:
     teacher_temperature_step: float = 0.01
     center_momentum: float = 0.9
     teacher_beta: float = 0.99
+    retain_periodic_checkpoints: bool = False
+    retain_reconstruction_history: bool = False
     resume_checkpoint: str | None = None
 
     def __post_init__(self) -> None:
@@ -109,18 +112,24 @@ def _configure_warning_filters() -> None:
 def _create_checkpoints(
     output_path: Path,
     sinkhorn_start_epoch: int,
+    *,
+    retain_periodic_checkpoints: bool,
 ) -> list[callbacks.Callback]:
-    """Create periodic and best-loss checkpoint callbacks."""
-    periodic_checkpoint = callbacks.ModelCheckpoint(
-        dirpath=output_path,
-        filename="{epoch:03d}",
-        every_n_epochs=10,
-        save_top_k=-1,
-        save_last=False,
-        save_weights_only=False,
-        verbose=True,
-        save_on_train_epoch_end=True,
-    )
+    """Create bounded checkpoint callbacks for best and resumable state."""
+    checkpoint_callbacks: list[callbacks.Callback] = [UpdateTeacher()]
+    if retain_periodic_checkpoints:
+        checkpoint_callbacks.append(
+            callbacks.ModelCheckpoint(
+                dirpath=output_path,
+                filename="{epoch:03d}",
+                every_n_epochs=10,
+                save_top_k=-1,
+                save_last=False,
+                save_weights_only=False,
+                verbose=True,
+                save_on_train_epoch_end=True,
+            )
+        )
     best_checkpoint = SinkhornCheckpoint(
         sinkhorn_start=sinkhorn_start_epoch,
         dirpath=output_path,
@@ -133,7 +142,8 @@ def _create_checkpoints(
         verbose=True,
         save_on_train_epoch_end=True,
     )
-    return [UpdateTeacher(), periodic_checkpoint, best_checkpoint]
+    checkpoint_callbacks.append(best_checkpoint)
+    return checkpoint_callbacks
 
 
 def _create_data_loader(
@@ -226,6 +236,7 @@ def _create_trainer(
             *_create_checkpoints(
                 output_path,
                 configuration.sinkhorn_start_epoch,
+                retain_periodic_checkpoints=(configuration.retain_periodic_checkpoints),
             ),
         ],
         log_every_n_steps=1,
@@ -275,6 +286,7 @@ def run_training(
         teacher_temperature_step=configuration.teacher_temperature_step,
         center_momentum=configuration.center_momentum,
         teacher_beta=configuration.teacher_beta,
+        retain_reconstruction_history=(configuration.retain_reconstruction_history),
         num_outputs=configuration.number_outputs,
         sinkhorn_start=configuration.sinkhorn_start_epoch,
     )
@@ -296,3 +308,15 @@ def run_training(
         train_dataloaders=training_data_loader,
         ckpt_path=configuration.resume_checkpoint,
     )
+    if trainer.is_global_zero:
+        pruning_summary = prune_completed_run_artifacts(
+            output_path,
+            retain_periodic_checkpoints=(configuration.retain_periodic_checkpoints),
+            retain_reconstruction_history=(configuration.retain_reconstruction_history),
+        )
+        print(
+            "Artifact retention removed "
+            f"{pruning_summary.periodic_checkpoints} periodic checkpoints and "
+            f"{pruning_summary.reconstruction_visualizations} old reconstruction "
+            "visualizations"
+        )

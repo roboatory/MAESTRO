@@ -24,6 +24,10 @@ training:
   teacher_temperature_step: 0.01
   center_momentum: 0.9
   teacher_beta: 0.99
+  # Keep the inference-best and rolling resume checkpoints without a 10-epoch
+  # checkpoint history. Retain only the newest reconstruction visualization.
+  retain_periodic_checkpoints: false
+  retain_reconstruction_history: false
   resume_checkpoint: null
 
 hydra:

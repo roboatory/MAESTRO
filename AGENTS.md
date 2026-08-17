@@ -62,5 +62,7 @@ manifest. New training outputs belong under their owning directory in
   from experimentally validated behavior.
 - Preserve unrelated work in a dirty worktree and never commit credentials,
   local biological data, or generated experiment artifacts.
+- Do not create, write, or maintain unit tests in this repository. Coding agents
+  must not add or recreate a `tests/` directory.
 - Use `uv` for the environment and the repository's existing formatting and
   validation tooling for code changes.

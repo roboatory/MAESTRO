@@ -157,8 +157,16 @@ This launches training on `data/h5/dataA`. The script defaults to `--accelerator
   `🎶 Epoch 5 [energy] | Duration: 0.4 min | Loss: ... | Recon: ... | Distillation: ... 🎶`
 - A new `output/<project_name>/` directory containing:
   - `config.pth` — the model configuration,
-  - periodic and best checkpoints (`*.ckpt`),
-  - `reconstruction_viz/epoch_XXXX.pdf` — UMAP visualizations comparing original vs. reconstructed cells, written every 10 epochs.
+  - `best-epoch=XXX.ckpt` — the lowest-loss checkpoint from the Sinkhorn phase,
+  - `last.ckpt` — a rolling checkpoint for resuming training,
+  - `reconstruction_viz/epoch_XXXX.pdf` — the newest UMAP visualization comparing original vs. reconstructed cells.
+
+The supported training configuration bounds artifact growth by default: it does
+not retain the 10-epoch checkpoint history, and each new reconstruction
+visualization replaces the older one. Set
+`training.retain_periodic_checkpoints=true` or
+`training.retain_reconstruction_history=true` only for runs where the full
+history is intentionally required.
 
 The loss line switches from `[energy]` to `[sinkhorn]` at `--sinkhorn_start`: the reconstruction term uses the cheaper energy distance as a warmup before switching to the Sinkhorn optimal-transport loss described in the Methods.
 

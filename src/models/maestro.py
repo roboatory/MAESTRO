@@ -19,6 +19,8 @@ from lightning.pytorch.utilities import rank_zero_only
 from torch import distributed, nn
 from torch.nn import functional
 
+from src.training.artifacts import prune_reconstruction_visualizations
+
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "OFF"
 matplotlib.use("Agg")
 warnings.filterwarnings("ignore", message="None of the inputs have requires_grad=True")
@@ -769,6 +771,7 @@ class MAESTROLightning(lightning.LightningModule):
         sinkhorn_start: int = 0,
         center_momentum: float = 0.9,
         teacher_beta: float = 0.99,
+        retain_reconstruction_history: bool = False,
     ) -> None:
         """Initialize the Lightning training module."""
         super().__init__()
@@ -1276,6 +1279,13 @@ class MAESTROLightning(lightning.LightningModule):
         plt.tight_layout(rect=[0, 0, 0.93, 0.97])
         plt.savefig(figure_path, dpi=150, bbox_inches="tight")
         plt.close(figure)
+        model.train()
 
         print(f"📊 Saved reconstruction visualization to {figure_path}")
-        model.train()
+        if not self.hparams.retain_reconstruction_history:
+            removed_count = prune_reconstruction_visualizations(figure_directory)
+            if removed_count:
+                print(
+                    "🧹 Artifact retention removed "
+                    f"{removed_count} older reconstruction visualization(s)"
+                )
